@@ -1,0 +1,174 @@
+name: Test Unicode Safety Check Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-clean:
+    name: Clean files pass
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+
+  test-bidi-detection:
+    name: Detect bidi override
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject bidi override
+        run: printf 'normal text\nbidi \xe2\x80\xae override\n' > /tmp/bidi-test.py && cp /tmp/bidi-test.py bidi-test.py
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Verify detection
+        run: |
+          echo "Critical findings: ${{ steps.scan.outputs.critical }}"
+          echo "Total findings: ${{ steps.scan.outputs.findings }}"
+          [ "${{ steps.scan.outputs.critical }}" -ge 1 ] || { echo "FAIL: Expected critical finding for bidi override"; exit 1; }
+          echo "PASS: Bidi override detected"
+
+  test-invisible-chars:
+    name: Detect invisible characters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject zero-width space
+        run: printf 'x = zero\xe2\x80\x8bwidth\n' > zws-test.py
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Verify detection
+        run: |
+          echo "Findings: ${{ steps.scan.outputs.findings }}"
+          [ "${{ steps.scan.outputs.findings }}" -ge 1 ] || { echo "FAIL: Expected invisible char finding"; exit 1; }
+          echo "PASS: Invisible character detected"
+
+  test-variation-selectors:
+    name: Detect variation selector abuse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject Glassworm-style variation selectors
+        run: printf 'text\xef\xb8\x80\xef\xb8\x81\xef\xb8\x82\xef\xb8\x83 payload\n' > vs-test.txt
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Verify detection
+        run: |
+          echo "Findings: ${{ steps.scan.outputs.findings }}"
+          [ "${{ steps.scan.outputs.findings }}" -ge 1 ] || { echo "FAIL: Expected variation selector finding"; exit 1; }
+          echo "PASS: Variation selector abuse detected"
+
+  test-tag-chars:
+    name: Detect tag characters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject tag characters
+        run: printf 'text\xf3\xa0\x81\x81\xf3\xa0\x81\x82 hidden\n' > tag-test.txt
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Verify detection
+        run: |
+          echo "Critical: ${{ steps.scan.outputs.critical }}"
+          [ "${{ steps.scan.outputs.critical }}" -ge 1 ] || { echo "FAIL: Expected critical finding for tag chars"; exit 1; }
+          echo "PASS: Tag characters detected"
+
+  test-sarif-output:
+    name: SARIF output works
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject adversarial content
+        run: printf 'bidi \xe2\x80\xae attack\n' > sarif-test.py
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          sarif-file: results.sarif
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Validate SARIF structure
+        run: |
+          jq -e '.version == "2.1.0"' results.sarif || { echo "FAIL: Bad SARIF version"; exit 1; }
+          jq -e '.runs[0].tool.driver.name == "unicode-safety-check"' results.sarif || { echo "FAIL: Bad tool name"; exit 1; }
+          jq -e '.runs[0].results | length > 0' results.sarif || { echo "FAIL: No results in SARIF"; exit 1; }
+          echo "PASS: SARIF output valid"
+
+  test-exclude-patterns:
+    name: Exclusion patterns work
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create adversarial file in excluded dir
+        run: |
+          mkdir -p vendor
+          printf 'pua \xee\x80\x80\n' > vendor/dep.py
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+          exclude-patterns: |
+            vendor/*
+      - name: Verify exclusion
+        run: |
+          echo "Findings: ${{ steps.scan.outputs.findings }}"
+          [ "${{ steps.scan.outputs.findings }}" -eq 0 ] || { echo "FAIL: Expected 0 findings with vendor excluded"; exit 1; }
+          echo "PASS: Exclusion patterns working"
+
+  test-macos:
+    name: Works on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inject bidi override
+        run: printf 'bidi \xe2\x80\xae test\n' > macos-test.py
+      - id: scan
+        uses: dcondrey/unicode-safety-check@v3
+        with:
+          scan-mode: all
+          disable-annotations: 'true'
+        continue-on-error: true
+      - name: Verify detection
+        run: |
+          [ "${{ steps.scan.outputs.critical }}" -ge 1 ] || { echo "FAIL: Expected critical finding on macOS"; exit 1; }
+          echo "PASS: Works on macOS"
